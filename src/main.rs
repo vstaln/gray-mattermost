@@ -2,9 +2,9 @@
 //! Config: ~/.gray/mattermost/config.json {"url","token","team"} or env
 //! MATTERMOST_URL / MATTERMOST_TOKEN / MATTERMOST_TEAM.
 
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use serde_json::{json, Value};
 
 const NAME: &str = "mattermost";
 
@@ -47,17 +47,25 @@ fn manifest() -> Value {
 }
 
 fn config_path() -> std::path::PathBuf {
-    let home = std::env::var_os("GRAY_HOME").map(std::path::PathBuf::from)
+    let home = std::env::var_os("GRAY_HOME")
+        .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".gray")))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join(".gray"))
+        })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     home.join("mattermost").join("config.json")
 }
 fn read_config() -> Value {
-    std::fs::read_to_string(config_path()).ok()
-        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}))
 }
 fn cfg(k: &str, env: &str) -> Option<String> {
-    std::env::var(env).ok().filter(|s| !s.is_empty())
+    std::env::var(env)
+        .ok()
+        .filter(|s| !s.is_empty())
         .or_else(|| read_config()[k].as_str().map(str::to_string))
 }
 
@@ -66,17 +74,26 @@ fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> 
         .ok_or("no url — `mattermost setup --url https://mm.example.com --token … --team …`")?;
     let tok = cfg("token", "MATTERMOST_TOKEN").ok_or("no token configured")?;
     let url = format!("{}/api/v4{}", base.trim_end_matches('/'), path);
-    let req = match method { "GET" => ureq::get(&url), _ => ureq::post(&url) }
-        .timeout(std::time::Duration::from_secs(20))
-        .set("Authorization", &format!("Bearer {tok}"));
+    let req = match method {
+        "GET" => ureq::get(&url),
+        _ => ureq::post(&url),
+    }
+    .timeout(std::time::Duration::from_secs(20))
+    .set("Authorization", &format!("Bearer {tok}"));
     let resp = match body {
         Some(b) => req.set("Content-Type", "application/json").send_json(b),
         None => req.call(),
     };
     match resp {
         Ok(r) => r.into_json().map_err(|e| e.to_string()),
-        Err(ureq::Error::Status(c, r)) => Err(format!("HTTP {c}: {}",
-            r.into_string().unwrap_or_default().chars().take(250).collect::<String>())),
+        Err(ureq::Error::Status(c, r)) => Err(format!(
+            "HTTP {c}: {}",
+            r.into_string()
+                .unwrap_or_default()
+                .chars()
+                .take(250)
+                .collect::<String>()
+        )),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -84,8 +101,11 @@ fn api(method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> 
 fn enc(s: &str) -> String {
     let mut o = String::new();
     for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { o.push(b as char) }
-        else { o.push_str(&format!("%{b:02X}")) }
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            o.push(b as char)
+        } else {
+            o.push_str(&format!("%{b:02X}"))
+        }
     }
     o
 }
@@ -96,45 +116,78 @@ fn is_id(s: &str) -> bool {
 
 fn team_id() -> Result<String, String> {
     let team = cfg("team", "MATTERMOST_TEAM").ok_or("no team configured")?;
-    if is_id(&team) { return Ok(team); }
+    if is_id(&team) {
+        return Ok(team);
+    }
     api("GET", &format!("/teams/name/{}", enc(&team)), None)?["id"]
-        .as_str().map(str::to_string)
+        .as_str()
+        .map(str::to_string)
         .ok_or_else(|| format!("team {team} not found"))
 }
 
 fn channel_id(channel: &str) -> Result<String, String> {
     let ch = channel.trim_start_matches('#');
-    if ch.is_empty() { return Err("empty channel".into()); }
-    if is_id(ch) { return Ok(ch.into()); }
+    if ch.is_empty() {
+        return Err("empty channel".into());
+    }
+    if is_id(ch) {
+        return Ok(ch.into());
+    }
     let team = cfg("team", "MATTERMOST_TEAM").ok_or("no team configured")?;
-    api("GET", &format!("/teams/name/{}/channels/name/{}",
-        enc(&team), enc(ch)), None)?["id"]
-        .as_str().map(str::to_string)
+    api(
+        "GET",
+        &format!("/teams/name/{}/channels/name/{}", enc(&team), enc(ch)),
+        None,
+    )?["id"]
+        .as_str()
+        .map(str::to_string)
         .ok_or_else(|| format!("channel {ch} not found"))
 }
 
 fn usernames(ids: &[&str]) -> HashMap<String, String> {
-    api("POST", "/users/ids", Some(&json!(ids))).ok()
-        .and_then(|v| v.as_array().cloned()).unwrap_or_default().iter()
-        .filter_map(|u| u["id"].as_str().zip(u["username"].as_str())
-            .map(|(i, n)| (i.to_string(), n.to_string())))
+    api("POST", "/users/ids", Some(&json!(ids)))
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|u| {
+            u["id"]
+                .as_str()
+                .zip(u["username"].as_str())
+                .map(|(i, n)| (i.to_string(), n.to_string()))
+        })
         .collect()
 }
 
 fn fmt_posts(v: &Value) -> String {
     let posts = v["posts"].as_object().cloned().unwrap_or_default();
     let order = v["order"].as_array().cloned().unwrap_or_default();
-    let mut ids: Vec<&str> = posts.values()
-        .filter_map(|p| p["user_id"].as_str()).collect();
-    ids.sort(); ids.dedup();
+    let mut ids: Vec<&str> = posts
+        .values()
+        .filter_map(|p| p["user_id"].as_str())
+        .collect();
+    ids.sort();
+    ids.dedup();
     let names = usernames(&ids);
-    order.iter().filter_map(|i| posts.get(i.as_str().unwrap_or(""))).map(|p| {
-        let u = p["user_id"].as_str().unwrap_or("");
-        format!("@{}  {}\n  {}",
-            names.get(u).map(String::as_str).unwrap_or(u),
-            p["id"].as_str().unwrap_or(""),
-            p["message"].as_str().unwrap_or("").chars().take(300).collect::<String>())
-    }).collect::<Vec<_>>().join("\n\n")
+    order
+        .iter()
+        .filter_map(|i| posts.get(i.as_str().unwrap_or("")))
+        .map(|p| {
+            let u = p["user_id"].as_str().unwrap_or("");
+            format!(
+                "@{}  {}\n  {}",
+                names.get(u).map(String::as_str).unwrap_or(u),
+                p["id"].as_str().unwrap_or(""),
+                p["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn tool(name: &str, args: &Value) -> Value {
@@ -142,54 +195,98 @@ fn tool(name: &str, args: &Value) -> Value {
         "mm_post" => {
             let ch = args["channel"].as_str().unwrap_or("");
             let text = args["text"].as_str().unwrap_or("");
-            channel_id(ch).and_then(|id|
-                api("POST", "/posts",
-                    Some(&json!({"channel_id": id, "message": text}))))
+            channel_id(ch)
+                .and_then(|id| {
+                    api(
+                        "POST",
+                        "/posts",
+                        Some(&json!({"channel_id": id, "message": text})),
+                    )
+                })
                 .map(|v| format!("posted → {}", v["id"].as_str().unwrap_or("(no id)")))
         }
         "mm_posts" => {
             let ch = args["channel"].as_str().unwrap_or("");
             let n = args["limit"].as_u64().unwrap_or(15).min(60);
-            channel_id(ch).and_then(|id|
-                api("GET", &format!("/channels/{id}/posts?per_page={n}"), None))
+            channel_id(ch)
+                .and_then(|id| api("GET", &format!("/channels/{id}/posts?per_page={n}"), None))
                 .map(|v| fmt_posts(&v))
         }
-        "mm_channels" => team_id().and_then(|t|
-            api("GET", &format!("/users/me/teams/{t}/channels?per_page=200"), None)
-                .map(|v| v.as_array().cloned().unwrap_or_default().iter()
-                    .map(|c| format!("{}{}  {}  {}",
-                        match c["type"].as_str().unwrap_or("") {
-                            "D" | "G" => "@", _ => "#" },
-                        c["name"].as_str().unwrap_or("?"),
-                        c["display_name"].as_str().unwrap_or(""),
-                        c["id"].as_str().unwrap_or("")))
-                    .collect::<Vec<_>>().join("\n"))),
+        "mm_channels" => team_id().and_then(|t| {
+            api(
+                "GET",
+                &format!("/users/me/teams/{t}/channels?per_page=200"),
+                None,
+            )
+            .map(|v| {
+                v.as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{}{}  {}  {}",
+                            match c["type"].as_str().unwrap_or("") {
+                                "D" | "G" => "@",
+                                _ => "#",
+                            },
+                            c["name"].as_str().unwrap_or("?"),
+                            c["display_name"].as_str().unwrap_or(""),
+                            c["id"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        }),
         "mm_users" => {
             let n = args["limit"].as_u64().unwrap_or(30).min(200);
-            team_id().and_then(|t|
-                api("GET", &format!("/users?in_team={t}&per_page={n}"), None)
-                    .map(|v| v.as_array().cloned().unwrap_or_default().iter()
-                        .map(|u| format!("@{}  {}  {}",
-                            u["username"].as_str().unwrap_or("?"),
-                            u["nickname"].as_str().unwrap_or(""),
-                            u["id"].as_str().unwrap_or("")))
-                        .collect::<Vec<_>>().join("\n")))
+            team_id().and_then(|t| {
+                api("GET", &format!("/users?in_team={t}&per_page={n}"), None).map(|v| {
+                    v.as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|u| {
+                            format!(
+                                "@{}  {}  {}",
+                                u["username"].as_str().unwrap_or("?"),
+                                u["nickname"].as_str().unwrap_or(""),
+                                u["id"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            })
         }
         "mm_react" => {
             let post = args["post_id"].as_str().unwrap_or("");
             let emoji = args["emoji"].as_str().unwrap_or("").trim_matches(':');
-            api("GET", "/users/me", None).and_then(|me| {
-                let uid = me["id"].as_str().ok_or("no user id".to_string())?;
-                api("POST", "/reactions", Some(&json!({
-                    "user_id": uid, "post_id": post, "emoji_name": emoji})))
-            }).map(|_| format!("reacted :{emoji}: → {post}"))
+            api("GET", "/users/me", None)
+                .and_then(|me| {
+                    let uid = me["id"].as_str().ok_or("no user id".to_string())?;
+                    api(
+                        "POST",
+                        "/reactions",
+                        Some(&json!({
+                    "user_id": uid, "post_id": post, "emoji_name": emoji})),
+                    )
+                })
+                .map(|_| format!("reacted :{emoji}: → {post}"))
         }
         "mm_search" => {
             let q = args["query"].as_str().unwrap_or("");
             let n = args["limit"].as_u64().unwrap_or(20).min(60);
-            team_id().and_then(|t|
-                api("POST", &format!("/teams/{t}/posts/search"), Some(&json!({
-                    "terms": q, "is_or_search": false, "per_page": n}))))
+            team_id()
+                .and_then(|t| {
+                    api(
+                        "POST",
+                        &format!("/teams/{t}/posts/search"),
+                        Some(&json!({
+                    "terms": q, "is_or_search": false, "per_page": n})),
+                    )
+                })
                 .map(|v| fmt_posts(&v))
         }
         t => Err(format!("unknown tool {t}")),
@@ -216,17 +313,24 @@ fn cli(argv: &[String]) -> Result<String, String> {
             std::fs::create_dir_all(config_path().parent().unwrap()).map_err(|e| e.to_string())?;
             std::fs::write(config_path(), serde_json::to_string_pretty(&c).unwrap())
                 .map_err(|e| e.to_string())?;
-            #[cfg(unix)] {
+            #[cfg(unix)]
+            {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(config_path(),
-                    std::fs::Permissions::from_mode(0o600));
+                let _ =
+                    std::fs::set_permissions(config_path(), std::fs::Permissions::from_mode(0o600));
             }
             Ok("saved".into())
         }
-        Some("status") | None => Ok(format!("Mattermost\n  url: {}\n  team: {}\n  token: {}",
+        Some("status") | None => Ok(format!(
+            "Mattermost\n  url: {}\n  team: {}\n  token: {}",
             cfg("url", "MATTERMOST_URL").unwrap_or("MISSING".into()),
             cfg("team", "MATTERMOST_TEAM").unwrap_or("MISSING".into()),
-            if cfg("token", "MATTERMOST_TOKEN").is_some() { "set" } else { "MISSING" })),
+            if cfg("token", "MATTERMOST_TOKEN").is_some() {
+                "set"
+            } else {
+                "MISSING"
+            }
+        )),
         Some(o) => Err(format!("unknown verb {o}")),
     }
 }
@@ -236,7 +340,9 @@ fn sidecar() -> std::io::Result<()> {
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
         let line = line?;
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let method = v["method"].as_str().unwrap_or("");
         match v.get("id").cloned() {
             None if method == "plugin/shutdown" => return Ok(()),
@@ -245,11 +351,21 @@ fn sidecar() -> std::io::Result<()> {
                 let reply = if method == "plugin/manifest" {
                     json!({"id": id, "result": manifest()})
                 } else if method == "tool/call" {
-                    let mut r = tool(v["params"]["name"].as_str().unwrap_or(""), &v["params"]["args"]);
-                    r["id"] = id; r
+                    let mut r = tool(
+                        v["params"]["name"].as_str().unwrap_or(""),
+                        &v["params"]["args"],
+                    );
+                    r["id"] = id;
+                    r
                 } else if method == "command/run" {
-                    let argv: Vec<String> = v["params"]["argv"].as_array()
-                        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    let argv: Vec<String> = v["params"]["argv"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let text = cli(&argv).unwrap_or_else(|e| e);
                     json!({"id": id, "result": {"text": text}})
@@ -257,7 +373,8 @@ fn sidecar() -> std::io::Result<()> {
                     json!({"id": id, "error": {"code": -32601,
                         "message": format!("method not found: {method}")}})
                 };
-                writeln!(out, "{reply}")?; out.flush()?;
+                writeln!(out, "{reply}")?;
+                out.flush()?;
             }
         }
     }
@@ -267,21 +384,31 @@ fn sidecar() -> std::io::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<String> = match args.first().map(String::as_str) {
-        Some("mattermost") => args[1..].to_vec(), _ => args };
+        Some("mattermost") => args[1..].to_vec(),
+        _ => args,
+    };
     match args.first().map(String::as_str) {
         Some("manifest") => println!("{}", manifest()),
-        Some("sidecar") => { let _ = sidecar(); }
+        Some("sidecar") => {
+            let _ = sidecar();
+        }
         _ => {
             if args.is_empty() {
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    println!("mattermost — `mattermost setup --url https://mm.example.com --token … --team …`");
+                    println!(
+                        "mattermost — `mattermost setup --url https://mm.example.com --token … --team …`"
+                    );
                     return;
                 }
-                let _ = sidecar(); return;
+                let _ = sidecar();
+                return;
             }
             match cli(&args) {
                 Ok(t) => println!("{t}"),
-                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
         }
     }
