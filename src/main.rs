@@ -43,6 +43,7 @@ fn manifest() -> Value {
              "required": ["query"]}},
         ],
         "commands": ["/mattermost"], "subcommands": ["mattermost"],
+        "command_descriptions": {"/mattermost": "set up Mattermost and check status"},
     })
 }
 
